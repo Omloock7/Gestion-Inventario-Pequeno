@@ -1,23 +1,96 @@
 import sqlite3
 import os
+import sys
+import shutil
 from contextlib import closing
 from datetime import datetime
 from typing import List, Dict, Optional, Union, Any
+from PyQt5.QtSql import QSqlDatabase 
 
-# --- configuración ruta absoluta ---
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_NAME = os.path.join(BASE_DIR, "inventory.db")
+# ==============================================================================
+# 1. GESTIÓN DE RUTAS Y DIRECTORIOS (CRÍTICO PARA EL EXE VS DEV)
+# ==============================================================================
+
+APP_FOLDER_NAME = "EasyINV"
+
+# Detectamos si estamos en un EXE (Frozen) o en Código (Dev)
+if getattr(sys, 'frozen', False):
+    # --- MODO EXE (Producción) ---
+    # Los recursos estáticos están en _MEIPASS
+    BUNDLE_DIR = sys._MEIPASS 
+    EXE_DIR = os.path.dirname(sys.executable)
+    
+    # En producción, OBLIGAMOS a usar AppData para tener permisos de escritura
+    USER_DATA_DIR = os.path.join(os.getenv('APPDATA'), APP_FOLDER_NAME)
+    
+    # Crear carpeta en AppData si no existe
+    if not os.path.exists(USER_DATA_DIR):
+        try:
+            os.makedirs(USER_DATA_DIR)
+        except OSError:
+            # Fallback a carpeta de usuario si AppData falla
+            USER_DATA_DIR = os.path.join(os.path.expanduser("~"), APP_FOLDER_NAME)
+            os.makedirs(USER_DATA_DIR, exist_ok=True)
+
+else:
+    # --- MODO DESARROLLO (Visual Studio Code) ---
+    # Usamos la carpeta local del proyecto para no ensuciar AppData mientras programas
+    BUNDLE_DIR = os.path.dirname(os.path.abspath(__file__))
+    EXE_DIR = BUNDLE_DIR
+    USER_DATA_DIR = BUNDLE_DIR  # <--- Esto hace que la DB se guarde junto a tu código
+
+# ESTA ES LA RUTA FINAL QUE USARÁ TODO EL SISTEMA
+DB_PATH = os.path.join(USER_DATA_DIR, "inventory.db")
+
+# ==============================================================================
 
 def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_NAME)
+    """Devuelve una conexión a la base de datos en la ruta segura."""
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
+    """
+    Inicializa la base de datos.
+    1. Si no existe en la ruta destino, intenta copiar una plantilla.
+    2. Si no hay plantilla, crea las tablas desde cero.
+    3. Configura la conexión QtSql para la interfaz gráfica.
+    """
+    
+    # --- PASO 1: GESTIÓN DE ARCHIVOS ---
+    if not os.path.exists(DB_PATH):
+        print(f"Base de datos no encontrada en {DB_PATH}. Inicializando...")
+        
+        # Buscamos si existe una plantilla 'inventory.db' (útil para actualizaciones del EXE)
+        candidates = [
+            os.path.join(EXE_DIR, "inventory.db"),
+            os.path.join(BUNDLE_DIR, "inventory.db")
+        ]
+        
+        copied = False
+        for candidate in candidates:
+            # Evitamos copiarnos a nosotros mismos en modo desarrollo
+            if os.path.abspath(candidate) == os.path.abspath(DB_PATH):
+                continue
+
+            if os.path.exists(candidate):
+                try:
+                    shutil.copy2(candidate, DB_PATH)
+                    print(f"Plantilla copiada exitosamente de: {candidate}")
+                    copied = True
+                    break
+                except Exception as e:
+                    print(f"Error al copiar plantilla: {e}")
+        
+        if not copied:
+            print("No se encontró plantilla externa. Se creará una base de datos nueva.")
+
+    # --- PASO 2: CREACIÓN DE TABLAS (Solo si no existen) ---
     with closing(get_db_connection()) as conn:
         cur = conn.cursor()
         
-        #  Tabla de Productos
+        # 1. Tabla de Productos
         cur.execute("""
             CREATE TABLE IF NOT EXISTS items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,8 +101,6 @@ def init_db():
                 stock INTEGER NOT NULL,
                 provider_id INTEGER,
                 created_at TEXT,
-                
-                -- Columnas integradas nativamente (Antes eran migraciones):
                 active INTEGER DEFAULT 1,
                 price_c1 REAL DEFAULT 0,
                 price_c2 REAL DEFAULT 0,
@@ -51,15 +122,13 @@ def init_db():
             )
         """)
 
-        # Detalle de Ventas 
+        # 3. Detalle de Ventas 
         cur.execute("""
             CREATE TABLE IF NOT EXISTS sale_items (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 sale_id INTEGER,
                 item_id INTEGER,
-                
-                item_name TEXT, -- Integrado nativamente
-                
+                item_name TEXT, 
                 qty INTEGER,
                 unit_price REAL,
                 FOREIGN KEY(sale_id) REFERENCES sales(id),
@@ -67,7 +136,7 @@ def init_db():
             )
         """)
 
-        #Tabla de Proveedores
+        # 4. Tabla de Proveedores
         cur.execute("""
             CREATE TABLE IF NOT EXISTS providers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,25 +146,27 @@ def init_db():
                 active INTEGER DEFAULT 1
             )
         """)
+        conn.commit()
 
-        # --- MIGRACIONES ---
-        # para futuras actualizaciones de la bd sin dañar datos
-        migrations = []
+    # --- PASO 3: INICIALIZAR CONEXIÓN QT (PARA LA GUI) ---
+    if QSqlDatabase.contains("qt_sql_default_connection"):
+        db = QSqlDatabase.database("qt_sql_default_connection")
+    else:
+        db = QSqlDatabase.addDatabase("QSQLITE")
+    
+    db.setDatabaseName(DB_PATH)
+    
+    if not db.open():
+        print(f"ERROR CRÍTICO: QtSql no pudo abrir la DB en {DB_PATH}")
+        print(db.lastError().text())
+    else:
+        print(f"Conexión QtSql establecida correctamente en: {DB_PATH}")
 
-        if migrations:
-            print(f"Verificando esquema de base de datos en: {DB_NAME}...")
-            for query in migrations:
-                try:
-                    cur.execute(query)
-                except sqlite3.OperationalError:
-                    pass 
-            conn.commit()
-        else:
-            conn.commit()
-            
-        print("Base de datos inicializada correctamente.")
+    print("Inicialización de DB completada.")
 
-# --- Consultas de proveedores ---
+# ==============================================================================
+# FUNCIONES DE LÓGICA DE NEGOCIO 
+# ==============================================================================
 
 def add_provider(name: str, phone: str) -> int:
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -150,8 +221,6 @@ def get_items_by_provider(provider_id: int) -> List[Dict[str, Any]]:
             result.append(item)
             
         return result
-
-# --- consultas de ítems ---
 
 def add_item(sku: str, name: str, description: str, price: float, stock: int, 
              p_c1: float = 0, p_c2: float = 0, provider_id: Optional[int] = None,
@@ -246,8 +315,6 @@ def delete_item_by_sku(sku: str) -> bool:
         conn.commit()
         return cur.rowcount > 0
 
-# --- consultas de ventas ---
-
 def register_sale(title: str, client_id: Optional[int], items_list: List[Dict], payment_method: str) -> int:
     created_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with closing(get_db_connection()) as conn:
@@ -255,10 +322,8 @@ def register_sale(title: str, client_id: Optional[int], items_list: List[Dict], 
             cur = conn.cursor()
             cur.execute("BEGIN")
             
-            # Calcular total (por seguridad, aunque venga del frontend)
             total_sale = sum(item['qty'] * item['price'] for item in items_list)
             
-            # Insertar cabecera venta
             cur.execute("""
                 INSERT INTO sales (title, client_id, total, payment_method, created_at) 
                 VALUES (?, ?, ?, ?, ?)
@@ -266,11 +331,9 @@ def register_sale(title: str, client_id: Optional[int], items_list: List[Dict], 
             
             sale_id = cur.lastrowid
             
-            # Insertar detalles y descontar stock
             for item in items_list:
                 cur.execute("UPDATE items SET stock = stock - ? WHERE id = ?", (item['qty'], item['id']))
                 
-                # Nombre de backup por si el item no viene con nombre explícito
                 item_name = item.get('name', 'Producto Desconocido')
                 
                 cur.execute("""
@@ -297,7 +360,6 @@ def get_all_sales(limit: int = 1000) -> List[Dict[str, Any]]:
         return [dict(row) for row in cur.fetchall()]
 
 def get_sale_details(sale_id: int) -> List[Dict[str, Any]]:
-        #obtiene los items vendidos en una venta específica
     query = """
         SELECT 
             si.item_name,       

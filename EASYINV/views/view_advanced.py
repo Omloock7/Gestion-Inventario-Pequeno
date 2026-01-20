@@ -5,6 +5,7 @@ import sqlite3
 import zipfile
 import json 
 import traceback 
+import gc   # Necesario para liberar memoria y soltar el archivo
 from datetime import datetime, date
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, 
@@ -12,12 +13,40 @@ from PyQt5.QtWidgets import (
     QDialog, QFormLayout, QDateEdit, QDialogButtonBox 
 )
 from PyQt5.QtCore import Qt, QDate
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(CURRENT_DIR)
-DB_PATH = os.path.join(PROJECT_ROOT, "inventory.db")
-LOG_FILE = os.path.join(PROJECT_ROOT, "error_log.txt")
+from PyQt5.QtSql import QSqlDatabase 
 
-# DIÁLOGO PARA SELECCIONAR FECHAS
+APP_FOLDER_NAME = "EasyINV" 
+
+
+if getattr(sys, 'frozen', False):
+    # --- MODO EXE (Producción) ---
+    BASE_DIR = sys._MEIPASS
+    EXE_DIR = os.path.dirname(sys.executable)
+    # Ruta en AppData (Donde está la DB real)
+    USER_DATA_DIR = os.path.join(os.getenv('APPDATA'), APP_FOLDER_NAME)
+    
+    # Crear carpeta si no existe
+    if not os.path.exists(USER_DATA_DIR):
+        try:
+            os.makedirs(USER_DATA_DIR)
+        except OSError:
+            USER_DATA_DIR = os.path.join(os.path.expanduser("~"), APP_FOLDER_NAME)
+            os.makedirs(USER_DATA_DIR, exist_ok=True)
+else:
+    # --- MODO DESARROLLO ---
+    # Obtenemos la ruta de este archivo (advanced.py)
+    current_file_path = os.path.dirname(os.path.abspath(__file__))
+    # Si este archivo está dentro de una carpeta "views", subimos un nivel 
+    if os.path.basename(current_file_path) == 'views':
+        USER_DATA_DIR = os.path.dirname(current_file_path)
+    else:
+        USER_DATA_DIR = current_file_path
+
+# Definir rutas finales
+DB_PATH = os.path.join(USER_DATA_DIR, "inventory.db")
+LOG_FILE = os.path.join(USER_DATA_DIR, "error_log.txt")
+
+
 class DateRangeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -74,8 +103,10 @@ class AdvancedView(QWidget):
         gb_db = QGroupBox("Gestión de Base de Datos")
         layout_db = QVBoxLayout()
 
-        lbl_info_db = QLabel(f"Archivo actual: {DB_PATH}")
+        # Mostramos la ruta real para depuración
+        lbl_info_db = QLabel(f"Ubicación de datos:\n{DB_PATH}")
         lbl_info_db.setStyleSheet("color: gray; font-size: 10px;")
+        lbl_info_db.setWordWrap(True)
         
         btn_export = QPushButton("📦 Crear Copia de Seguridad (.zip)")
         btn_export.clicked.connect(self.export_database)
@@ -118,16 +149,10 @@ class AdvancedView(QWidget):
         btn_export_log = QPushButton("Guardar archivo de log")
         btn_export_log.clicked.connect(self.export_error_log)
 
-        #PRUEBA DE ERROR CONTROLADO
-        #btn_test_crash = QPushButton("⚠️ Simular Error (Test)")
-        #btn_test_crash.setStyleSheet("background-color: #e74c3c; color: white;")
-        #btn_test_crash.clicked.connect(self.trigger_crash)
-
         layout_log.addWidget(QLabel("Registro de fallos:"))
         layout_log.addWidget(btn_refresh_log)
         layout_log.addWidget(self.txt_log_preview)
         layout_log.addWidget(btn_export_log)
-        #layout_log.addWidget(btn_test_crash)
         
         gb_log.setLayout(layout_log)
         layout.addWidget(gb_log)
@@ -135,7 +160,6 @@ class AdvancedView(QWidget):
         layout.addStretch()
 
     # LÓGICA DE EXPORTACIÓN JSON
-# LÓGICA DE EXPORTACIÓN JSON (CON DETALLE DE PRODUCTOS)
     def export_sales_json(self):
         # 1. Pedir fechas
         dlg = DateRangeDialog(self)
@@ -154,12 +178,12 @@ class AdvancedView(QWidget):
                 return
 
             # Consultar base de datos
-            try:
+            try:   
                 conn = sqlite3.connect(DB_PATH)
-                conn.row_factory = sqlite3.Row  # Permite convertir filas a diccionarios
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
                 
-                #  Traemos las VENTAS (Encabezados)
+                # Traemos las Ventas
                 query_sales = """
                     SELECT * FROM sales 
                     WHERE date(created_at) BETWEEN ? AND ?
@@ -171,7 +195,7 @@ class AdvancedView(QWidget):
 
                 # Recorremos cada venta para buscar sus PRODUCTOS
                 for sale_row in sales_rows:
-                    sale_dict = dict(sale_row) # Convertimos la venta a diccionario python
+                    sale_dict = dict(sale_row)
                     sale_id = sale_dict['id']
 
                     # Buscamos los items de ESTA venta específica
@@ -183,30 +207,25 @@ class AdvancedView(QWidget):
                     cursor.execute(query_items, (sale_id,))
                     items_rows = cursor.fetchall()
 
-                    # Convertimos los items a lista de diccionarios
                     items_list = []
                     for item_row in items_rows:
-                        # Calculamos el subtotal aquí mismo para que salga en el JSON
                         d_item = dict(item_row)
+                        # Cálculo simple por seguridad si no existe en BD
                         d_item['subtotal'] = d_item['qty'] * d_item['unit_price']
                         items_list.append(d_item)
 
-                    # Insertamos la lista de items DENTRO de la venta
                     sale_dict['items_sold'] = items_list
-                    
-                    # Añadimos la venta completa a la lista final
                     full_sales_data.append(sale_dict)
 
                 conn.close()
 
-                #  Guardar archivo JSON
+                # Guardar archivo JSON
                 with open(filename, 'w', encoding='utf-8') as f:
                     json.dump(full_sales_data, f, indent=4, ensure_ascii=False)
 
                 QMessageBox.information(self, "Éxito", f"Se exportaron {len(full_sales_data)} ventas con sus detalles.")
 
             except Exception as e:
-                # Log del error
                 timestamp_log = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 try:
                     with open(LOG_FILE, 'a', encoding='utf-8') as f:
@@ -218,14 +237,17 @@ class AdvancedView(QWidget):
                     pass
 
                 QMessageBox.critical(self, "Error", f"Fallo al exportar: {e}\n(Revisa 'Diagnóstico del Sistema')")
+
     # LÓGICA DE EXPORTACIÓN BD 
     def export_database(self):
-        temp_backup_db = os.path.join(PROJECT_ROOT, "temp_backup.db")
+        # Usamos un temporal en la misma carpeta USER_DATA para evitar problemas de cruce de discos
+        temp_backup_db = os.path.join(USER_DATA_DIR, "temp_backup.db")
         
         filename, _ = QFileDialog.getSaveFileName(
             self, 
             "Guardar Copia de Seguridad", 
-            f"respaldo_inventario_{datetime.now().strftime('%Y%m%d_%H%M')}.zip", 
+            # CAMBIO SOLICITADO: Solo fecha, sin horas ni minutos
+            f"EasyINV_Respaldo_{datetime.now().strftime('%Y%m%d')}.zip", 
             "Zip Files (*.zip)"
         )
         
@@ -233,19 +255,25 @@ class AdvancedView(QWidget):
             return
 
         try:
+            # Conectamos a la DB REAL (en AppData o Local)
             conn_src = sqlite3.connect(DB_PATH)
             conn_dest = sqlite3.connect(temp_backup_db)
+            
+            # Usamos la API de backup de SQLite
             conn_src.backup(conn_dest)
+            
             conn_dest.close()
             conn_src.close()
 
             with zipfile.ZipFile(filename, 'w', zipfile.ZIP_DEFLATED) as zf:
+                # Al guardar dentro del zip, le llamamos siempre inventory.db
                 zf.write(temp_backup_db, arcname="inventory.db")
 
             if os.path.exists(temp_backup_db):
-                os.remove(temp_backup_db)
+                try: os.remove(temp_backup_db)
+                except: pass
 
-            QMessageBox.information(self, "Exito", "Copia de seguridad (.zip) creada correctamente.")
+            QMessageBox.information(self, "Éxito", "Copia de seguridad (.zip) creada correctamente.")
 
         except Exception as e:
             if os.path.exists(temp_backup_db):
@@ -253,12 +281,12 @@ class AdvancedView(QWidget):
                 except: pass
             QMessageBox.critical(self, "Error", f"No se pudo crear el respaldo: {str(e)}")
 
-    # LÓGICA DE IMPORTACIÓN BD 
+    # LÓGICA DE IMPORTACIÓN BD (MODIFICADA PARA SEGURIDAD)
     def import_database(self):
         confirm = QMessageBox.warning(self, "Peligro", 
-                                      "Esta accion REEMPLAZARA toda tu base de datos actual.\n"
-                                      "Se perderan los datos actuales irremediablemente.\n\n"
-                                      "¿Estas seguro de continuar?",
+                                      "Esta acción REEMPLAZARÁ toda tu base de datos actual.\n"
+                                      "Se perderán los datos actuales irremediablemente.\n\n"
+                                      "¿Estás seguro de continuar?",
                                       QMessageBox.Yes | QMessageBox.No)
         if confirm == QMessageBox.No:
             return
@@ -270,43 +298,103 @@ class AdvancedView(QWidget):
         if not filename:
             return
 
-        temp_extract_path = os.path.join(PROJECT_ROOT, "temp_restore_inv.db")
+        # Rutas auxiliares en AppData
+        temp_extract_path = os.path.join(USER_DATA_DIR, "temp_restore_inv.db")
+        backup_current_path = os.path.join(USER_DATA_DIR, "inventory.db.bak")
 
         try:
+            # Extraer el zip
             with zipfile.ZipFile(filename, 'r') as zf:
-                if "inventory.db" not in zf.namelist():
-                    raise ValueError("El archivo ZIP no es un respaldo válido (no contiene inventory.db)")
+                db_name_in_zip = None
+                for name in zf.namelist():
+                    if name.endswith(".db"):
+                        db_name_in_zip = name
+                        break
+                
+                if not db_name_in_zip:
+                    raise ValueError("El archivo ZIP no contiene una base de datos válida (.db)")
+                
                 with open(temp_extract_path, 'wb') as f_out:
-                    f_out.write(zf.read("inventory.db"))
+                    f_out.write(zf.read(db_name_in_zip))
 
-            if os.path.exists(DB_PATH):
-                os.remove(DB_PATH)
+            #  CERRAR CONEXIONES DE PYQT
+            # Es vital obtener la instancia y removerla antes de tocar el archivo
+            db = QSqlDatabase.database()
+            connection_name = db.connectionName() 
             
+            if db.isOpen():
+                db.close()
+            
+            # Borra la referencia de Python
+            del db 
+            # Remueve de QtSql
+            QSqlDatabase.removeDatabase(connection_name)
+            
+            # Forzamos limpieza de memoria
+            gc.collect()
+
+            # INTERCAMBIO DE ARCHIVOS (SWAP)
+            # Primero, si existe la BD actual, la renombramos a .bak (backup de seguridad instantáneo)
+            if os.path.exists(DB_PATH):
+                # Si ya existía un .bak viejo, lo borramos
+                if os.path.exists(backup_current_path):
+                    try: os.remove(backup_current_path)
+                    except: pass 
+                
+                try:
+                    os.rename(DB_PATH, backup_current_path)
+                except OSError:
+                    # Si rename falla, intentamos copiar y borrar
+                    shutil.move(DB_PATH, backup_current_path)
+
+            # Mover la nueva BD a su lugar
             shutil.move(temp_extract_path, DB_PATH)
             
-            QMessageBox.information(self, "Exito", 
+            QMessageBox.information(self, "Éxito", 
                                     "Base de datos restaurada correctamente.\n"
-                                    "La aplicación DEBE REINICIARSE ahora.")
+                                    "La aplicación se cerrará automáticamente para recargar los datos.")
+            
+            sys.exit()
 
         except PermissionError:
+            # Intento de recuperación si falla por permisos
+            if os.path.exists(backup_current_path) and not os.path.exists(DB_PATH):
+                try: os.rename(backup_current_path, DB_PATH)
+                except: pass
+
             QMessageBox.critical(self, "Error de Permisos", 
-                                 "Windows tiene bloqueado el archivo. Reinicia la PC e intenta de nuevo.")
+                                 "Windows tiene bloqueado el archivo. Reinicia la PC e intenta de nuevo inmediatamente al abrir la app.")
+        
         except Exception as e:
+            # Limpieza de temporales
             if os.path.exists(temp_extract_path):
                 try: os.remove(temp_extract_path)
                 except: pass
+            
+            # Restaurar backup si existe y la original desapareció
+            if os.path.exists(backup_current_path) and not os.path.exists(DB_PATH):
+                try: os.rename(backup_current_path, DB_PATH)
+                except: pass
+            
+            # Guardar log
+            with open(LOG_FILE, 'a') as f:
+                f.write(f"\n[ERROR IMPORT] {str(e)}\n{traceback.format_exc()}")
+                
             QMessageBox.critical(self, "Error Fatal", f"Fallo al restaurar: {str(e)}")
 
     # LÓGICA DE LOGS
     def load_log_preview(self):
         if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r', encoding='utf-8') as f:
-                content = f.read()
-                self.txt_log_preview.setText(content if content else "Log vacio.")
-                
-                cursor = self.txt_log_preview.textCursor()
-                cursor.movePosition(cursor.End)
-                self.txt_log_preview.setTextCursor(cursor)
+            try:
+                with open(LOG_FILE, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                    self.txt_log_preview.setText(content if content else "Log vacío.")
+                    
+                    cursor = self.txt_log_preview.textCursor()
+                    cursor.movePosition(cursor.End)
+                    self.txt_log_preview.setTextCursor(cursor)
+            except Exception:
+                self.txt_log_preview.setText("No se pudo leer el archivo de log.")
         else:
             self.txt_log_preview.setText("No existe archivo de log.")
 
@@ -319,22 +407,6 @@ class AdvancedView(QWidget):
         if filename:
             try:
                 shutil.copy(LOG_FILE, filename)
-                QMessageBox.information(self, "Exito", "Log guardado.")
+                QMessageBox.information(self, "Éxito", "Log guardado.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Fallo al guardar: {e}")
-
-    """intento de error controlado para probar el log
-    def trigger_crash(self):
-        print("Iniciando prueba de crash...")
-        try:
-            x = 1 / 0
-        except Exception as e:
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            with open(LOG_FILE, 'a', encoding='utf-8') as f:
-                f.write(f"\n[{timestamp}] ERROR DE PRUEBA SIMULADO:\n")
-                f.write(f"Mensaje: {str(e)}\n")
-                traceback.print_exc(file=f)
-                f.write("-" * 50 + "\n")
-            
-            self.load_log_preview()
-            QMessageBox.warning(self, "Test Finalizado", "Se ha generado y registrado un error de división por cero.")"""
