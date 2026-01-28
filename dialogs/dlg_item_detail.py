@@ -1,9 +1,12 @@
+import sqlite3
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QTableWidget, QTableWidgetItem, 
     QHeaderView, QLabel, QTextEdit, QPushButton, QHBoxLayout
 )
 from PyQt5.QtGui import QFont, QColor
 from PyQt5.QtCore import Qt
+
+DB_FILENAME = "inventory.db" 
 
 class ItemDetailDialog(QDialog):
     def __init__(self, item_data, parent=None):
@@ -12,6 +15,27 @@ class ItemDetailDialog(QDialog):
         self.setMinimumWidth(500)
         self.item_data = item_data
         self.setup_ui()
+
+    def get_provider_name(self, provider_id):
+        if not provider_id:
+            return "General"  # Caso sin proveedor asignado
+        
+        try:
+            conn = sqlite3.connect(DB_FILENAME)
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT name FROM providers WHERE id = ?", (provider_id,))
+            result = cursor.fetchone()
+            
+            conn.close()
+            
+            if result:
+                return result[0]
+            else:
+                return "Proveedor no encontrado"
+                
+        except Exception as e:
+            return f"Error al leer: {e}"
 
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -32,14 +56,16 @@ class ItemDetailDialog(QDialog):
         self.table.setAlternatingRowColors(True)
         self.table.setStyleSheet("QTableWidget { gridline-color: #bdc3c7; }")
 
-        # Helpers para formatear dinero y nulos
+        #formatea dinero y nulos
         def fmt_price(val):
             return f"$ {float(val):,.2f}" if val else "$ 0.00"
         
         def fmt_str(val):
             return str(val) if val is not None else ""
 
-        # Datos organizados
+        prov_id = self.item_data.get('provider_id')
+        prov_name = self.get_provider_name(prov_id)
+
         rows = [
             ("ID Sistema", fmt_str(self.item_data.get('id'))),
             ("Código SKU", fmt_str(self.item_data.get('sku'))),
@@ -50,7 +76,7 @@ class ItemDetailDialog(QDialog):
             ("Precio Público", fmt_price(self.item_data.get('price'))),
             ("P. Mayorista", fmt_price(self.item_data.get('price_c1'))),
             ("P. Distribuidor", fmt_price(self.item_data.get('price_c2'))),
-            ("Proveedor ID", fmt_str(self.item_data.get('provider_id') or "N/A")),
+            ("Proveedor", prov_name),
             ("Fecha Alta", fmt_str(self.item_data.get('created_at')))
         ]
 
@@ -113,3 +139,5 @@ class ItemDetailDialog(QDialog):
         
         btn_layout.addWidget(btn)
         layout.addLayout(btn_layout)
+        
+        

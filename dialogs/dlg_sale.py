@@ -10,9 +10,7 @@ import db as db
 class AutoExpandComboBox(QComboBox):
     def focusInEvent(self, event):
         if event.reason() == Qt.TabFocusReason or event.reason() == Qt.BacktabFocusReason:
-            # Usamos un timer muy corto para dar tiempo a que la UI se estabilice
             QTimer.singleShot(50, self.showPopup)
-        
         super().focusInEvent(event)
 
 class SaleDialog(QDialog):
@@ -23,6 +21,7 @@ class SaleDialog(QDialog):
         
         self.cart = [] 
         self.all_items = [] 
+        self.item_map = {} 
         
         self.setup_ui()
         self.load_data()
@@ -35,7 +34,6 @@ class SaleDialog(QDialog):
         top_frame.setStyleSheet("background-color: #f1f2f6; border-radius: 8px; padding: 10px;")
         top_layout = QHBoxLayout(top_frame)
 
-        # Estilo visual para que los combos resalten en blanco
         combo_style = """
             QComboBox {
                 background-color: white; 
@@ -45,19 +43,17 @@ class SaleDialog(QDialog):
                 min-width: 150px;
             }
             QComboBox:focus {
-                border: 2px solid #3498db; /* Borde azul al enfocar */
+                border: 2px solid #3498db; 
             }
             QComboBox::drop-down {
                 border: 0px;
             }
         """
 
-        # Método de Pago
         self.cmb_payment = AutoExpandComboBox()
         self.cmb_payment.addItems(["Efectivo", "Transferencia", "Tarjeta", "Crédito"])
         self.cmb_payment.setStyleSheet(combo_style)
 
-        #Campo Título
         self.input_title = QLineEdit()
         self.input_title.setPlaceholderText("Ej: Cliente Mesa 5, Pedido Juan... (Opcional)")
         self.input_title.setStyleSheet("""
@@ -86,10 +82,19 @@ class SaleDialog(QDialog):
         self.completer.setCaseSensitivity(Qt.CaseInsensitive)
         self.completer.setFilterMode(Qt.MatchContains)
         self.txt_search.setCompleter(self.completer)
+
+
+        # carga datos cuando se selecciona del autocompletado o cuando se escribe 
+        self.completer.activated.connect(self.on_product_selected)
+        self.txt_search.textChanged.connect(self.on_text_changed)
         
         # Selector de TIPO DE PRECIO
         self.cmb_price_type = AutoExpandComboBox()
-        self.cmb_price_type.addItems(["Precio Público", "P. Mayorista (C1)", "P. Distribuidor (C2)"])
+        self.cmb_price_type.addItems([
+            "Precio Público ($ 0)", 
+            "P. Mayorista ($ 0)", 
+            "P. Distribuidor ($ 0)"
+        ])
         self.cmb_price_type.setToolTip("Selecciona la tarifa a aplicar")
         self.cmb_price_type.setStyleSheet(combo_style)
 
@@ -103,7 +108,6 @@ class SaleDialog(QDialog):
             QSpinBox:focus { border: 2px solid #3498db; }
         """)
 
-        # Botón Agregar
         btn_add = QPushButton("Agregar [Enter]")
         btn_add.setCursor(Qt.PointingHandCursor)
         btn_add.setStyleSheet("""
@@ -112,7 +116,7 @@ class SaleDialog(QDialog):
             QPushButton:pressed { background-color: #1abc9c; }
         """)
         btn_add.clicked.connect(self.add_item_to_cart)
-        btn_add.setAutoDefault(True) # activar con Enter
+        btn_add.setAutoDefault(True)
 
         mid_layout.addWidget(QLabel("Producto:"))
         mid_layout.addWidget(self.txt_search, 3)
@@ -124,7 +128,7 @@ class SaleDialog(QDialog):
 
         layout.addLayout(mid_layout)
 
-        #TABLA DEL CARRITO
+        # TABLA
         self.table = QTableWidget()
         self.table.setColumnCount(6)
         self.table.setHorizontalHeaderLabels(["ID", "Producto", "Tarifa", "Cant.", "P. Unit.", "Subtotal"])
@@ -136,9 +140,8 @@ class SaleDialog(QDialog):
         self.table.doubleClicked.connect(self.remove_row)
         layout.addWidget(self.table)
 
-        #PIE DE PÁGINA
+        # FOOTER
         bottom_layout = QHBoxLayout()
-        
         self.lbl_total = QLabel("Total: $0.00")
         self.lbl_total.setStyleSheet("font-size: 24px; font-weight: bold; color: #27ae60;")
         
@@ -158,7 +161,6 @@ class SaleDialog(QDialog):
 
         layout.addLayout(bottom_layout)
 
-        #ORDEN DE TABULACIÓN 
         QWidget.setTabOrder(self.input_title, self.cmb_payment)
         QWidget.setTabOrder(self.cmb_payment, self.txt_search)
         QWidget.setTabOrder(self.txt_search, self.cmb_price_type)
@@ -179,6 +181,36 @@ class SaleDialog(QDialog):
             
         model = QStringListModel(search_list)
         self.completer.setModel(model)
+
+    # Función auxiliar para actualizar los textos del combo
+    def update_price_labels(self, p1=0, p2=0, p3=0):
+        # Mantenemos el índice seleccionado actual para que no salte
+        current_idx = self.cmb_price_type.currentIndex()
+        
+        self.cmb_price_type.setItemText(0, f"Precio Público (${float(p1):,.0f})")
+        self.cmb_price_type.setItemText(1, f"P. Mayorista (${float(p2):,.0f})")
+        self.cmb_price_type.setItemText(2, f"P. Distribuidor (${float(p3):,.0f})")
+        
+        self.cmb_price_type.setCurrentIndex(current_idx)
+
+    # Se ejecuta al seleccionar del autocompletado
+    def on_product_selected(self, text):
+        if text in self.item_map:
+            item = self.item_map[text]
+            self.update_price_labels(
+                item.get('price', 0),
+                item.get('price_c1', 0),
+                item.get('price_c2', 0)
+            )
+
+    # Si el texto coincide exactamente con una clave, actualizamos
+    def on_text_changed(self, text):
+
+        if text in self.item_map:
+            self.on_product_selected(text)
+        else:
+            # Si no coincide (está escribiendo o borró), ponemos todo en 0
+            self.update_price_labels(0, 0, 0)
 
     def add_item_to_cart(self):
         text = self.txt_search.text()
@@ -233,6 +265,7 @@ class SaleDialog(QDialog):
         # Reiniciar para siguiente producto
         self.txt_search.clear()
         self.spin_qty.setValue(1)
+        self.update_price_labels(0, 0, 0) # Volver a 0 visualmente
         self.txt_search.setFocus() 
 
     def refresh_cart_table(self):
@@ -277,3 +310,5 @@ class SaleDialog(QDialog):
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar la venta:\n{str(e)}")
+            
+            

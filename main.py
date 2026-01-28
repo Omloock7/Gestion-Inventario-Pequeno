@@ -7,33 +7,31 @@ from ui_mainwindow import MainWindow
 import db
 import logger_config
 
-# --- FUNCIÓN CORREGIDA PARA RUTAS ---
 def resource_path(relative_path):
     """ 
     Obtiene la ruta absoluta al recurso. 
-    Funciona tanto en el .exe (PyInstaller) como en desarrollo.
     """
     try:
         # PyInstaller crea una carpeta temporal y guarda la ruta en _MEIPASS
         base_path = sys._MEIPASS
     except Exception:
-        # MODO DESARROLLO (CORREGIDO):
+        # MODO DESARROLLO:
         # Usamos la ubicación exacta de ESTE archivo main.py
         base_path = os.path.dirname(os.path.abspath(__file__))
 
     return os.path.join(base_path, relative_path)
 
 def main():
-    # 1. Configuración de Logs
+    # Configuración de Logs
     logger_config.setup_error_logging()
     
-    # 2. Inicialización de DB
+    #  Inicialización de DB
     # La DB se creará donde esté el archivo .exe (o el .py), no en temporales
     print("Iniciando sistema...")
     db.init_db()
     print("Base de datos conectada correctamente.")
      
-    # 3. Configuración para barra de tareas Windows (AppID)
+    #  Configuración para barra de tareas Windows (AppID)
     # Esto evita que el icono se pierda en la barra de tareas de Windows
     try:
         myappid = 'miempresa.easyinv.sistema.v1' 
@@ -43,7 +41,7 @@ def main():
 
     app = QApplication(sys.argv)
     
-    # 4. Cargar el icono usando la función segura
+    #  Cargar el icono usando la función segura
     # Esto busca "assets/logo.ico" correctamente ahora
     logo_path = resource_path(os.path.join("assets", "logo.ico"))
 
@@ -59,3 +57,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

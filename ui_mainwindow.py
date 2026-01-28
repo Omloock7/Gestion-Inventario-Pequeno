@@ -21,7 +21,7 @@ except ImportError as e:
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("EASYINV v2.0")
+        self.setWindowTitle("EASYINV v2.1")
         self.resize(1200, 800)
         
         central_widget = QWidget()
@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
         self.btn_advanced.setCursor(Qt.PointingHandCursor)
         self.btn_advanced.clicked.connect(lambda: self.switch_view(2))
         # --- TÍTULO ---
-        lbl_title = QLabel("EASYINV v2.0")
+        lbl_title = QLabel("EASYINV v2.1")
         lbl_title.setStyleSheet("color: #bdc3c7; font-weight: bold;")
         
         bar_layout.addWidget(self.btn_inv)
